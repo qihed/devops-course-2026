@@ -114,6 +114,27 @@ hostname -f        # devops-vm.devops.local
 | `01-clean-install` | 2026-10-28 19:35 | чистая установка, `apt upgrade` |
 | `02-keys-configured` | 2026-10-28 19:38 | пользователь `devops`, ключ, `ssh devops` без пароля |
 | `03-ssh-hardened` | 2026-10-28 19:38 | SSH ужесточён (порт 2222, без root и паролей) |
+| `04-nginx-https` | 2026-10-28 20:08 | Nginx, самоподписанный сертификат, перенаправление на HTTPS |
 
-## 8. Проверка конфигурации
-`scripts/audit.sh` проверяет SSH (root, пароли, порт, `MaxAuthTries`) и UFW (активность, политика deny); код возврата 0 при успехе, 1 при нарушении.
+## 8. Веб-сервер
+- Пакет: `nginx` 1.24.0 из репозитория Ubuntu (`sudo apt install -y nginx`). Главный процесс — root, рабочие — `www-data`.
+- Конфигурация ресурса: `/etc/nginx/sites-available/devops-site`, активирована ссылкой `/etc/nginx/sites-enabled/devops-site`; стандартный ресурс отключён (`sudo rm /etc/nginx/sites-enabled/default`, файл в `sites-available` сохранён).
+  - блок 1: `listen 80; listen [::]:80; server_name devops.local; return 301 https://$host$request_uri;`
+  - блок 2: `listen 443 ssl; listen [::]:443 ssl; server_name devops.local;`, `ssl_certificate /etc/ssl/certs/devops.crt;`, `ssl_certificate_key /etc/ssl/private/devops.key;`, `ssl_protocols TLSv1.2 TLSv1.3;`, `root /var/www/devops-site; index index.html; location / { try_files $uri $uri/ =404; } error_page 404 /404.html;`, журналы `/var/log/nginx/devops-site.access.log` и `.error.log`. HSTS не включён.
+- Каталог ресурса: `/var/www/devops-site`, владелец `devops:devops`, права каталога 755, файлов 644 (`sudo mkdir -p ... && sudo chown -R devops:devops ...`). Доставка: `scripts/deploy.sh` (`rsync --delete --chmod=u=rwX,go=rX`).
+- Сертификат `/etc/ssl/certs/devops.crt` (644, root) и ключ `/etc/ssl/private/devops.key` (600, root:root). Формирование (срок 365 дней, самоподписанный, SAN `DNS:devops.local`):
+  ```
+  sudo openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+    -keyout /etc/ssl/private/devops.key -out /etc/ssl/certs/devops.crt \
+    -subj "/CN=devops.local" -addext "subjectAltName=DNS:devops.local"
+  ```
+  Действует с 2026-10-28 до 2027-10-28. Ключ не покидает `/etc/ssl/private`, сертификат копируется на хост: `scp devops:/etc/ssl/certs/devops.crt ~/devops.crt`.
+- Применение конфигурации: `sudo nginx -t && sudo systemctl reload nginx` (не `restart`).
+- Порты 80 и 443 уже разрешены в UFW (раздел 6), профили `Nginx *` не используются.
+- Доступ с Mac (VM не видна напрямую): SSH-туннель через сервер,
+  `ssh -f -N -L 127.0.0.1:8080:10.56.0.174:80 -L 127.0.0.1:8443:10.56.0.174:443 huawei`;
+  проверки: `curl --cacert ~/devops.crt --connect-to devops.local:443:127.0.0.1:8443 https://devops.local`.
+  Для обращения по `https://devops.local` в браузере без порта в `/etc/hosts` Mac добавляется `127.0.0.1 devops.local`, а туннель поднимается на портах 80 и 443 (нужен sudo).
+
+## 9. Проверка конфигурации
+`scripts/audit.sh` проверяет SSH (root, пароли, порт, `MaxAuthTries`), UFW (активность, политика deny) и веб-сервер (раздел 8); код возврата 0 при успехе, 1 при нарушении.

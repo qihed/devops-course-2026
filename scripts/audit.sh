@@ -27,5 +27,13 @@ check "Политика входящего трафика: deny" "deny" "$(sudo 
 echo "[3] Учётные записи"
 awk -F: '$3>=1000 && $3<65534 {printf " %s (uid=%s)\n",$1,$3}' /etc/passwd
 
+echo "[4] Веб-сервер"
+check "Служба nginx активна" "active" "$(systemctl is-active nginx)"
+check "Конфигурация nginx корректна" "0" "$(sudo nginx -t >/dev/null 2>&1; echo $?)"
+# порог в днях можно завысить для проверки: CERT_DAYS=400 scripts/audit.sh
+check "Сертификат действует ещё не менее ${CERT_DAYS:-30} дн." "0" "$(openssl x509 -in /etc/ssl/certs/devops.crt -noout -checkend $(( ${CERT_DAYS:-30} * 86400 )) >/dev/null 2>&1; echo $?)"
+check "В каталоге ресурса нет файлов, доступных для записи всем" "0" "$(find /var/www/devops-site -perm -o+w | wc -l | tr -d ' ')"
+check "Права закрытого ключа равны 600" "600" "$(sudo stat -c '%a' /etc/ssl/private/devops.key)"
+
 echo "Пройдено: $PASS, не пройдено: $FAIL"
 [[ $FAIL -eq 0 ]] && exit 0 || exit 1
