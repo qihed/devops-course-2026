@@ -115,6 +115,7 @@ hostname -f        # devops-vm.devops.local
 | `02-keys-configured` | 2026-10-28 19:38 | пользователь `devops`, ключ, `ssh devops` без пароля |
 | `03-ssh-hardened` | 2026-10-28 19:38 | SSH ужесточён (порт 2222, без root и паролей) |
 | `04-nginx-https` | 2026-10-28 20:08 | Nginx, самоподписанный сертификат, перенаправление на HTTPS |
+| `05-docker-compose` | 2026-10-28 20:25 | Docker Engine, проект `~/app` (приложение + PostgreSQL) |
 
 ## 8. Веб-сервер
 - Пакет: `nginx` 1.24.0 из репозитория Ubuntu (`sudo apt install -y nginx`). Главный процесс — root, рабочие — `www-data`.
@@ -136,5 +137,26 @@ hostname -f        # devops-vm.devops.local
   проверки: `curl --cacert ~/devops.crt --connect-to devops.local:443:127.0.0.1:8443 https://devops.local`.
   Для обращения по `https://devops.local` в браузере без порта в `/etc/hosts` Mac добавляется `127.0.0.1 devops.local`, а туннель поднимается на портах 80 и 443 (нужен sudo).
 
-## 9. Проверка конфигурации
-`scripts/audit.sh` проверяет SSH (root, пароли, порт, `MaxAuthTries`), UFW (активность, политика deny) и веб-сервер (раздел 8); код возврата 0 при успехе, 1 при нарушении.
+## 9. Контейнеризация
+- Docker Engine 29.9.2 и плагин Compose v5.6.1 установлены из официального репозитория Docker (`https://download.docker.com/linux/ubuntu`, пакеты `docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin`); пакет `docker.io` не используется. Ключ репозитория `/etc/apt/keyrings/docker.asc`, список `/etc/apt/sources.list.d/docker.list`.
+- Группа `docker`: участник `devops` (`sudo usermod -aG docker devops`, затем новая SSH-сессия). Участник группы фактически имеет права root, поэтому группа выдаётся только учётным записям с правом sudo.
+- Проект: `~/app` (`/home/devops/app`), доставляется с хоста `rsync -avz --delete --exclude=.env app/ devops:app/`. Файлы: `Dockerfile`, `app.py`, `requirements.txt`, `.dockerignore`, `docker-compose.yml`, `.env.example`.
+- Образ `devops-app:1.0` (`python:3.12-slim`, процесс от пользователя `app`, uid 999, команда в exec-форме `gunicorn`). Контейнеры: `app-app-1` (приложение), `app-db-1` (`postgres:16-alpine`, healthcheck `pg_isready`); `depends_on` с условием `service_healthy`; `restart: unless-stopped`.
+- Файл `~/app/.env` создаётся только на сервере: `cp .env.example .env; chmod 600 .env; sed -i "s/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=$(openssl rand -hex 16)/" .env`; права 600, владелец `devops`; в репозиторий не входит (`.gitignore`, `.dockerignore`, `--exclude=.env`).
+- Публикуемые порты: `127.0.0.1:5000 -> 5000` (приложение, только для Nginx); порт СУБД 5432 не публикуется, приложение обращается к ней по имени сервиса `db` во встроенном DNS сети `app_backend`.
+- Том: `app_db_data` (данные PostgreSQL, `/var/lib/postgresql/data`); `docker compose down` том сохраняет, `down -v` удаляет (на рабочем сервере не использовать).
+- Обратный прокси-сервер: в блок HTTPS файла `/etc/nginx/sites-available/devops-site` добавлено
+  ```
+  location /app/ {
+      proxy_pass http://127.0.0.1:5000/;
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+  }
+  ```
+  Применение: `sudo nginx -t && sudo systemctl reload nginx`. Статический ресурс сохранён.
+- Запуск: `cd ~/app && docker compose up -d --build`; остановка: `docker compose down` (без `-v`).
+
+## 10. Проверка конфигурации
+`scripts/audit.sh` проверяет SSH (root, пароли, порт, `MaxAuthTries`), UFW (активность, политика deny) веб-сервер (раздел 8) и контейнеризацию (раздел 9); код возврата 0 при успехе, 1 при нарушении.
