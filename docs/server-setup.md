@@ -158,5 +158,28 @@ hostname -f        # devops-vm.devops.local
   Применение: `sudo nginx -t && sudo systemctl reload nginx`. Статический ресурс сохранён.
 - Запуск: `cd ~/app && docker compose up -d --build`; остановка: `docker compose down` (без `-v`).
 
-## 10. Проверка конфигурации
+## 10. Ansible
+
+- **Расположение проекта**: каталог `ansible/` репозитория `qihed/devops-course-2026` (и переносится в `qihed/devops-ci-app/ansible/` для КР № 3).
+- **Управляющий узел**: изолированный LXD-контейнер `devops-control` (Ubuntu 24.04, `10.56.0.121`, `ansible-core 2.16.3`, `sshpass 1.09`, коллекции `ansible.posix 1.6.2`, `community.docker 4.5.0`, `community.general 9.5.0`).
+- **Управляемый узел**: виртуальная машина `devops-vm` (Ubuntu Server 24.04 amd64, `10.56.0.174/24` на мосту `lxdbr0`, возвращена к снимку `01-clean-install`).
+- **Inventory**:
+  - `ansible/inventory/bootstrap.ini` — первичный запуск от `student` (порт `22`) с `--ask-pass` и `--ask-become-pass`;
+  - `ansible/inventory/prod.ini` (по умолчанию в `ansible.cfg`) — неинтерактивные запуски от `devops` (порт `22`) по ключу `~/.ssh/devops_vm`.
+- **Роли и ответственность**:
+  - `base` — проверка ОС (Ubuntu 24.04 amd64), базовые пакеты (`python3-debian`, `python3-requests`, `ufw`, `openssh-server`), официальный репозиторий Docker (`deb822_repository`), установка и запуск Docker Engine;
+  - `ssh` — пользователь `devops`, открытый SSH-ключ, `/etc/sudoers.d/devops` (`NOPASSWD`, проверка `visudo -cf`), hardening SSH в `/etc/ssh/sshd_config.d/00-ansible-hardening.conf` (проверка `sshd -t -f`, отключение паролей и root), UFW (`22/tcp`, `80/tcp`, `deny incoming`);
+  - `nginx` — пакет Nginx, шаблон reverse proxy `devops-ci-app.conf.j2` (`80 -> 127.0.0.1:5000`), отключение `default`, активация `devops-ci-app`, handlers `nginx -t` + `reload`;
+  - `app` — добавление `devops` в группу `docker`, загрузка проверенного образа GHCR по полному SHA, запуск контейнера `devops-ci-app` с публикацией `127.0.0.1:5000:5000`, проверка `http://127.0.0.1:5000/health` модулем `uri`.
+- **Приложение (из ПР № 10)**:
+  - адрес образа GHCR: `ghcr.io/qihed/devops-ci-app` (публичный пакет, аутентификация для `docker pull` не требуется);
+  - полный SHA (`app_tag`): `03548dd1f0c8b837912512c1f13ec2cb6148f1aa`;
+  - порт контейнера: `127.0.0.1:5000 -> 5000` (доступ снаружи только через Nginx на порту `80`);
+  - health endpoint: `http://10.56.0.174/health` (внутри VM — `http://127.0.0.1:5000/health`), ожидается `{"status":"ok"}`.
+- **Команды управления** (из каталога `ansible/`):
+  - первичный запуск (bootstrap): `ansible-playbook -i inventory/bootstrap.ini site.yml --ask-pass --ask-become-pass`;
+  - повторный запуск (prod, идемпотентный): `ansible-playbook site.yml`;
+  - read-only аудит: `ansible-playbook verify.yml`.
+
+## 11. Проверка конфигурации
 `scripts/audit.sh` проверяет SSH (root, пароли, порт, `MaxAuthTries`), UFW (активность, политика deny) веб-сервер (раздел 8) и контейнеризацию (раздел 9); код возврата 0 при успехе, 1 при нарушении.
